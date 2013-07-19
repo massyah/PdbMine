@@ -1,7 +1,11 @@
 PdbMine: Mining the PDB database jointly with MEDLINE
 ========================================================
 
-Accompanying code and databases for Article "Timely deposition of macromolecular structures is necessary for peer review", from Robbie P. Joosten, Hayssam Soueidan, Lodewyk Wessels and Anastassis Perrakis. 
+Accompanying code and databases for Article _Timely deposition of macromolecular structures is necessary for peer review_, by Robbie P. Joosten, Hayssam Soueidan, Lodewyk Wessels and Anastassis Perrakis. 
+
+This study starts with a list of PDB entries that you want to analyze. For the article, we took all PDB entries listed on [the PDB website](http://www.rcsb.org/pdb/home/home.do) as of the 01st June 2013. Based on these entries, the corresponding MEDLINE entries are downloaded parsed and both the PDB and the MEDLINE entries are stored in a local SQLite3 database. 
+
+
 
 # Getting the list of PDB entries 
 
