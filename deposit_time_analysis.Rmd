@@ -1,0 +1,761 @@
+```{r}
+library(lattice)
+library(xtable)
+library(scales)
+
+library(RSQLite)
+library(RUnit)
+library(gdata)
+library(gridExtra)
+library(RColorBrewer)
+library(rentrez)
+library(reshape2)
+library(lubridate)
+library(ggplot2)
+library(gplots)
+library(data.table)
+setwd("~/temp/PdbMine/")
+
+## GGplot default color scheme 
+gg_color_hue <- function(n,luminance=65,chroma=100) {
+  hues = seq(15, 375, length=n+1)
+  hcl(h=hues, l=luminance, c=chroma)[1:n]
+}
+
+## A hack to make xtable work with dates 
+xtable <- function(x, ...) {
+   for (i in which(sapply(x, function(y) !all(is.na(match(c("POSIXt","Date"),class(y))))))) x[[i]] <- as.character(x[[i]])
+   xtable::xtable(x, ...)
+}
+
+.simpleCap <- function(x) {
+    s <- strsplit(x, " ")[[1]]
+    paste(toupper(substring(s, 1,1)), tolower(substring(s, 2)),
+          sep="", collapse=" ")
+}
+
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+
+```
+
+We build the data table 
+```{r}
+m <- dbDriver("SQLite")
+con <- dbConnect(m, dbname = "local-medline-pdb.db")
+sql<-"SELECT pdbid,depodate, pmid,journal,
+cast(earliestpublicdate as chard) as earliestpublicdate,
+cast(receiveddate as char) as received,
+cast(aheadofprintdate as char) as aheadofprint,
+cast(accepteddate as char) as accepted,
+cast(publisheddate as char) as published,
+cast(earliestpublicationdate as char) as earliestpublication
+FROM pdb INNER JOIN medline ON jrnlref=pmid 
+WHERE 
+    earliestpublicdate IS NOT NULL 
+AND earliestpublicdate >=Datetime('1995-01-01')
+AND (published IS NULL OR published < Datetime('2014-01-01'))
+AND (accepted IS NULL OR accepted < Datetime('2014-01-01'))"
+#AND (accepted IS NULL OR received IS NULL OR received<=accepted
+merged<-dbGetQuery(con,sql)
+merged<-unique(merged)
+dim(merged)
+length(unique(merged$pdbid))
+length(unique(merged$pmid))
+save(merged,file="data/pdb.medline.RData")
+```
+
+We can then load it 
+```{r}
+load("data/pdb.medline.RData")
+```
+
+We recast the dates into R date type and build a data.table
+```{r}
+merged$earliestpublicdate <- as.Date(merged$earliestpublicdate)
+merged$earliestpublication <- as.Date(merged$earliestpublication)
+merged$depodate <- as.Date(merged$depodate)
+merged$published <- as.Date(merged$published)
+merged$received <- as.Date(merged$received)
+merged$aheadofprint <- as.Date(merged$aheadofprint)
+merged$accepted <- as.Date(merged$accepted)
+
+# Using lubridate helpers
+merged$pubyear <- as.factor(year(merged$earliestpublication))
+merged$depoyear <- as.factor(year(merged$depodate))
+
+
+merged$journal <- as.factor(merged$journal)
+merged$pmid <- as.factor(merged$pmid)
+pdb.medline <- data.table(merged)
+pdb.medline[,has.history:=!is.na(received) | !is.na(accepted),by=pdbid]
+save(merged,pdb.medline,file="data/pdb.medline.RData")
+```
+
+We filter out outliers, coming from NSMB that are accepted before review 
+```{r}
+outliers<-pdb.medline[!is.na(accepted) & !is.na(received) & received>accepted,pmid]
+pdb.medline <- pdb.medline[!(pmid %in% outliers)]
+
+outliers <- pdb.medline[!is.na(accepted) & earliestpublication<accepted,pmid]
+pdb.medline <- pdb.medline[!(pmid %in% outliers)]
+save(merged,pdb.medline,file="data/pdb.medline.RData")
+```
+
+
+We rename some journals whose name changed over time 
+```{r}
+pdb.medline[journal=="Nat Struct Biol",journal:="Nat Struct Mol Biol"]
+pdb.medline[journal=="Fold Des",journal:="Structure"] # Only 4 entries????
+
+pdb.medline[journal=="Acta Crystallogr D Biol Crystallogr",journal:="Acta Crystallogr D"]
+pdb.medline[journal=="Acta Crystallogr Sect F Struct Biol Cryst Commun",journal:="Acta Crystallogr F"]
+save(merged,pdb.medline,file="data/pdb.medline.RData")
+```
+Categorize each pub into sloppy or late 
+```{r}
+pdb.medline[,time:="On time"]
+pdb.medline[ as.integer(depodate - earliestpublication)>=2,time:="Late"]
+pdb.medline[as.integer(depodate - earliestpublicdate)>=2 & time=="On time",time:="Sloppy"]
+save(merged,pdb.medline,file="data/pdb.medline.RData")
+
+# Old sloppy 
+#pdb.medline[depodate> earliestpublicdate,.N,by=journal][order(N)]
+```
+
+
+* Do we have sloppy deposit for articles without publication history? (Accepted and/or received)
+We shouldn't
+```{r}
+pdb.medline[time=="Sloppy" & (is.na(accepted) & is.na(received))]
+```
+
+* Do we have deposits that happened after publication that are neither sloppy or late? We shouldn't
+```{r}
+pdb.medline[time=="On time" & (depodate - earliestpublicdate>1)]
+```
+# Summary table 
+```{r}
+summary.per.journal<-pdb.medline[,list(N=.N,"With.History"=sum((!is.na(received) | !is.na(accepted)) ),"sloppy"=sum(time=="Sloppy"),"late"=sum(time=="Late")),by=journal]
+summary.per.journal[,sloppy.ratio.min:=ifelse(With.History>0,sloppy/N,NA)]
+summary.per.journal[,sloppy.ratio:=ifelse(With.History>0, sloppy/With.History,NA)]
+summary.per.journal[,late.ratio:=late/N]
+summary.per.journal<-head(summary.per.journal[order(N,decreasing=T)],n=50)
+````
+
+# Adding impact factor
+
+# Generate the table with merged IF 
+```{r}
+load("data/impact.factor.2012.RData")
+
+manual.journal.correction=new.env()
+manual.journal.correction[["Haematologica"]]="Acta Haematol-basel"
+manual.journal.correction[["J Comput Aided Mol Des"]]="J Comput Aid Mol Des"
+manual.journal.correction[["Acta Crystallogr D Biol Crystallogr"]]="Acta Crystallogr D"
+manual.journal.correction[["Acta Crystallogr Sect F Struct Biol Cryst Commun"]]="Acta Crystallogr F"
+manual.journal.correction[["Biochemistry"]]="Biochemistry-us"
+manual.journal.correction[["Epigenetics Chromatin"]]="Epigenet Chromatin"
+manual.journal.correction[["Circ Cardiovasc Genet"]]="Circ-cardiovasc Gene"
+manual.journal.correction[["N Engl J Med"]]="New Engl J Med"
+manual.journal.correction[["Comp Biochem Physiol B Biochem Mol Biol"]]="Comp Biochem Phys B"
+manual.journal.correction[["Angew Chem Int Ed Engl"]]="Angew Chem Int Edit"
+manual.journal.correction[["Mol Biochem Parasitol"]]="Mol Biochem Parasit"
+manual.journal.correction[["Antimicrob Agents Chemother"]]="Antimicrob Agents Ch"
+manual.journal.correction[["Genes Dev"]]="Gene Dev"
+manual.journal.correction[["Proc Natl Acad Sci U S A"]]="P Natl Acad Sci Usa"
+manual.journal.correction[["Nat Struct Biol"]]="Nat Struct Mol Biol"
+manual.journal.correction[["Eur J Biochem"]]="J Biochem"
+manual.journal.correction[["Protein Pept Lett"]]="Protein Peptide Lett"
+manual.journal.correction[["Chemistry"]]="Chem-eur J"
+manual.journal.correction[["Biochim Biophys Acta"]]="Bba-proteins Proteom"
+manual.journal.correction[["Appl Microbiol Biotechnol"]]="Appl Microbiol Biot"
+manual.journal.correction[["Appl Environ Microbiol"]]="Appl Environ Microb"
+manual.journal.correction[["Dalton Trans"]]="Dalton T"
+manual.journal.correction[["Biochem Biophys Res Commun"]]="Biochem Bioph Res Co"
+manual.journal.correction[["Chem Commun (Camb)"]]="Chem Commun"
+
+
+impact.factor<-data.frame(impact.factor)
+rownames(impact.factor)<-impact.factor$journal
+
+
+match.journal.name<-function(j,approx=F,top1=F){
+  
+  if(j %in% ls(manual.journal.correction)){
+    cat(j,"\n")
+    return(manual.journal.correction[[j]])
+  }
+	# Exact match?
+	if(j %in% rownames(impact.factor)){
+		return(j)
+	}
+	# Exact case insensitive match?
+	if(.simpleCap(j) %in% rownames(impact.factor)){
+		return(.simpleCap(j))
+	}
+		
+	j<-.simpleCap(j)
+	if(approx){
+		res<-rownames(impact.factor[agrep(j,impact.factor$journal,fixed=T,ignore.case=F),])
+	}else{
+		res<-rownames(impact.factor[grep(j,impact.factor$journal,fixed=T,ignore.case=F),])
+	}
+  
+	if(top1){
+		sub=impact.factor[res,]
+		sorted<-rownames(sub[order(sub$Impact.Factor,decreasing=T),])
+		return(sorted[1])
+	}else{
+
+		if(length(res)>=1){
+			return(res)
+		}else{
+			return(character(0))
+		}
+ 	}
+}
+
+match.journal.name("Nat Prot")
+
+sapply(as.character(tail(pdb.medline[,.N,by=journal][order(N)][,journal],n=20)),match.journal.name)
+```
+
+We generate and display count data with annotated IF 
+```{r}
+library(xlsx)
+summary.per.journal[,IF:=impact.factor[match.journal.name(as.character(journal)),"IF"],by=journal]
+summary.per.journal
+write.csv(summary.per.journal,quote=F,row.names=F,file="ratio.per.journal.csv")
+write.xlsx(summary.per.journal,row.names=F,file="ratio.per.journal.xlsx")
+```
+
+# Plots
+We plot the difference between depo and public as a function of depo, for the 20 journals with most pub
+```{r}
+pdb.medline.pop <- pdb.medline[depodate >= "2000-01-01" & depodate <= "2012-12-31"]
+top.journals <-tail(pdb.medline.pop[,.N,by=journal][order(N),journal],n=20)
+
+ggplot(pdb.medline.pop[journal %in% top.journals],aes(x=depodate,y=as.integer(earliestpublicdate-depodate),colour=journal))+geom_point()+geom_smooth()
+ggplot(pdb.medline.pop[journal %in% top.journals],aes(x=depodate,y=as.integer(earliestpublicdate-depodate),colour=time))+geom_point()+geom_smooth()
+
+
+ggplot(pdb.medline.pop[journal %in% top.journals],aes(x=depodate,y=published,colour=is.sloppy))+geom_point()+geom_smooth()
+ggplot(pdb.medline.pop[journal %in% top.journals],aes(x=depodate,y=published,colour=is.late))+geom_point()+geom_smooth()
+
+```
+
+
+```{r}
+pdb.medline.pop <- pdb.medline[depodate >= "1995-01-01" & depodate <= "2012-12-31"]
+totPubs<-max(pdb.medline.pop[,.N,by=depoyear][,N])
+g<-ggplot()+geom_bar(data=pdb.medline.pop,aes(x=depoyear,fill=time),position="fill")
+g+geom_line(data=pdb.medline.pop[,.N,by=depoyear],aes(x=depoyear,y=N/totPubs,group=1),size=1,colour="grey20")+geom_point(data=pdb.medline.pop[,.N,by=depoyear],aes(x=depoyear,y=N/totPubs),size=2)
+# ggplot(pdb.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N,group=1))+geom_line()
+```
+
+
+# Main figure 
+If we filter by publication year instead of depoyear 
+```{r}
+
+# colors<-brewer_pal(type="div",palette="Set1")(9)[c(3,5,1)]
+# 
+# colors<-gg_color_hue(3,chroma=80,lum=65)[c(2,3,1)]
+#  colors<-gg_color_hue(3)
+# colors<-gg_color_hue(12,luminance=70)[c(5,2,1)] # Green orange red 
+# colors<-gg_color_hue(20,luminance=70)[c(10,5,1)] 
+colors<-gg_color_hue(3,chroma=90,luminance=60)[c(2,3,1)] # Tassos selection
+# colors<-gg_color_hue(12,chroma=90,luminance=50)[c(5,2,1)] # Green orange red 
+
+only.with.history <- F
+
+if (only.with.history){
+  pdb.medline.pop <- pdb.medline[ earliestpublicdate >= "1995-01-01" & earliestpublication <= "2012-12-31" & (!is.na(received) | !is.na(accepted))]
+  # Merge entries before 2000
+  pdb.medline.pop[pubyear=="1999",pubyear:="2000"]
+  pdb.medline.pop[pubyear=="1998",pubyear:="2000"]
+}else{
+  pdb.medline.pop <- pdb.medline[ earliestpublicdate >= "1995-01-01" & earliestpublication <= "2012-12-31"]
+
+}
+
+pdb.medline.pop[,.N,by=pubyear][order(pubyear)]
+pdb.medline.pop$time <- factor(pdb.medline.pop$time,levels=c("On time","Sloppy","Late"))
+
+#write.xlsx(pdb.medline.pop,file="pdb.merged.with.medline.post.1995.all.entries.xlsx")
+
+write.xlsx(pdb.medline.pop[,.N,by=list(pubyear,time)][order(pubyear)],file="late.sloppy.per.year.xlsx")
+
+# Make a matrix like 
+m1 <- pdb.medline.pop[,.N,by=list(pubyear,time)][order(pubyear)]
+setnames(m1,"time","variable")
+m2 <- pdb.medline.pop[,.N,by=list(pubyear,has.history)][has.history==T,list(pubyear,N)]
+m2$variable="has.history"
+m3 <- pdb.medline.pop[,.N,by=list(pubyear)]
+m3$variable="total"
+
+write.xlsx(acast(rbind(m1,m2,m3,use.names=T),variable~pubyear),file="categories.per.year.xlsx")
+
+totPubs<-max(pdb.medline.pop[,.N,by=pubyear][,N])*1.05
+g<-ggplot()+geom_bar(data=pdb.medline.pop,aes(x=pubyear,fill=time),position="fill")
+g<-g+geom_line(data=pdb.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N/totPubs,group=1),size=1,colour="grey40")+geom_point(data=pdb.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N/totPubs),size=2,colour="grey20")
+g<-g+scale_y_continuous(labels = percent_format())+xlab("Year of publication")+ylab("Proportion")
+g<-g+geom_text(data=pdb.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N/totPubs,label=N),size=4.2,vjust=-1)
+g<-g+scale_fill_manual(values=colors)
+
+#+ggtitle(paste(colors,collapse="-"))
+
+if(only.with.history){
+  ggsave("proportion.late.sloppy.per.year.pdb.only.history.pdf",w=12,h=8,plot=g)
+}else{
+  ggsave("proportion.late.sloppy.per.year.pdb.pdf",w=12,h=8,plot=g)
+}
+print(g)
+
+```
+
+Facetted plot for counts and rates 
+```{r}
+# Only keep datum for which the review date is available ?
+
+pdb.medline.pop <- pdb.medline[earliestpublicdate >= "1995-01-01" & earliestpublicdate <= "2012-12-31"]
+pdb.medline.pop$panel<-"Ratio"
+pdb.medline.pop$time <- factor(pdb.medline.pop$time,levels=c("On time","Sloppy","Late"))
+counts <- pdb.medline.pop[,.N,by=pubyear]
+counts$panel <- "Counts"
+counts$time <- "All"
+g<-ggplot()+facet_grid(panel~.,scale="free")
+g<-g+geom_bar(data=pdb.medline.pop,aes(x=pubyear,fill=time),position="fill")
+g<-g+geom_line(data=counts,aes(x=pubyear,y=N,group=1),size=1,colour="grey20")+geom_point(data=counts,aes(x=pubyear,y=N),size=2)
+g
+```
+How many publications have gone public in 2012 but not published in 2012? This would explain the differences between selection based on earliestpublicdate and on published date 
+```{r}
+pdb.medline[earliestpublicdate <= "2012-12-31" & published>"2013-01-01"]
+```
+
+It's the 1.3k that we were missing? 
+```{r}
+pdb.medline[earliestpublicdate >= "1995-01-01" & earliestpublicdate <= "2012-12-31"][,.N,by=pubyear][order(pubyear)]
+
+pdb.medline[published >= "1995-01-01" & published <= "2012-12-31"][,.N,by=pubyear][order(pubyear)]
+
+```
+
+
+
+
+
+Any association between IF and sloppy ?
+```{r}
+ggplot(summary.per.journal[N>10,],aes(x=IF,y=sloppy.ratio,size=N))+geom_point()+geom_smooth()
+ggplot(summary.per.journal[N>10,],aes(x=IF,y=late.ratio,size=N))+geom_point()+geom_smooth()
+
+
+```
+
+* Do people publishing in Science are more in advance than people publishing in Nature? 
+```{r}
+ggplot(pdb.medline[journal %in% c("Nature","Science","Cell","Proteins","Proc Natl Acad Sci U S A") & earliestpublication>="2000-01-01"],aes(x=earliestpublication,y=as.integer(depodate-earliestpublication),group=journal, colour=journal,shape=time) )+geom_point()+geom_smooth(method="lm")+coord_cartesian(ylim=c(-300,100))
+
+
+ggplot(pdb.medline[journal %in% summary.per.journal[N>1000,journal] & pubyear %in% c("2010","2011","2012")],aes(x=reorder(journal,summary.per.journal[order(sloppy.ratio)][journal]),y=as.integer(depodate-earliestpublication), fill=journal) )+geom_boxplot(notch=T)+coord_cartesian(ylim=c(-300,100))
+
+
+```
+Do the distribution of days in advance match the sloppy percent? 
+```{r}
+pdb.medline.with.IF=merge(pdb.medline,summary.per.journal,by="journal")
+
+pdb.medline.with.IF$journal.by.sloppy <- factor(pdb.medline.with.IF$journal,levels=summary.per.journal[order(sloppy.ratio)][,journal])
+
+ggplot(pdb.medline.with.IF[N>2000 & pubyear %in% c("2010","2011","2012")],aes(x=journal.by.sloppy,y=as.integer(depodate-earliestpublication), fill=IF) )+geom_boxplot(notch=T)+coord_cartesian(ylim=c(-300,100))
+ggplot(pdb.medline.with.IF[N>1146 & pubyear %in% c("2010","2011","2012")],aes(x=journal.by.sloppy,y=as.integer(depodate-earliestpublication), fill=sloppy.ratio) )+geom_boxplot(notch=T)+coord_cartesian(ylim=c(-300,100))
+
+
+ggplot(pdb.medline.with.IF,aes(x=IF,y=as.integer(depodate-earliestpublicdate),color=time))+geom_point()+geom_smooth(method="lm")+coord_cartesian(ylim=c(-250,250))+scale_x_continuous(lim=c(0,40))
+
+ggplot(pdb.medline.with.IF,aes(x=earliestpublicdate,y=as.integer(depodate-earliestpublicdate),color=time))+geom_point()+geom_smooth(method="lm")+coord_cartesian(ylim=c(-250,250))
+
+```
+
+# Heatmap of sloppiness by journal and year
+```{r}
+
+summary.per.journal<- pdb.medline[!is.na(received),.N,by=journal][N>=20]
+summary.per.journal[,IF:=impact.factor[match.journal.name(as.character(journal)),"IF"],by=journal]
+
+
+top.journals <-tail(summary.per.journal[order(N),journal],n=70)
+
+
+summary.per.journal.year<-pdb.medline[journal %in% top.journals & earliestpublication>="2002-01-01",list(N=.N,"With.History"=sum((!is.na(received) | !is.na(accepted)) ),"sloppy"=sum(time=="Sloppy"),"late"=sum(time=="Late")),by=list(journal,pubyear)]
+
+summary.per.journal.year[,sloppy.ratio.min:=ifelse(With.History>0,sloppy/N,NA)]
+summary.per.journal.year[,sloppy.ratio:=ifelse(With.History>0, sloppy/With.History,NA)]
+summary.per.journal.year[,late.ratio:=late/N]
+summary.per.journal.year[,IF:=impact.factor[match.journal.name(as.character(journal)),"IF"],by=journal]
+#sloppy.per.journal.year <- acast(na.omit(summary.per.journal.year),journal~pubyear,value.var="late")
+
+# Build the ordering
+journals.by.IF <- summary.per.journal.year[,mean(IF),by="journal"][order(V1,na.last=F)][,journal]
+
+summary.per.journal.year$journal <- factor(summary.per.journal.year$journal,levels=journals.by.IF)
+
+write.xlsx(summary.per.journal.year,file="ratio.per.journal.and.year.xlsx",row.names=F)
+
+colours=c("gold","white","red")
+colours.breaks=c(0,0.5,1)
+
+ggplot(na.omit(summary.per.journal.year[pubyear!="2013"]),aes(x=pubyear,y=journal,fill=sloppy.ratio,alpha=With.History>=10))+geom_tile()+geom_text(aes(label=paste(sloppy,With.History,sep="/")))+scale_fill_gradientn(colours=colours,values=colours.breaks)+scale_size_continuous(range=c(2,4))
+# ggsave("heatmap.sloppy.per.year.per.journal.sorted.by.IF.pdf",width=20,height=12)
+# 
+# colours.breaks.late=c(0,0.05,0.4)
+# ggplot(na.omit(summary.per.journal.year[pubyear!="2013"]),aes(x=pubyear,y=journal,alpha=N>=10,fill=late.ratio))+geom_tile()+geom_text(aes(label=paste(late,N,sep="/")))+scale_fill_gradientn(colours=colours,values=colours.breaks.late)+scale_size_continuous(range=c(2,4))
+
+#summary.per.journal<-head(summary.per.journal[order(N,decreasing=T)],n=50)
+
+```
+
+
+
+## Heatmap with sloppy and late combined 
+```{r}
+
+colours = c("#00AA37","white","#E26D65")
+colours=c("gold","white","red")
+colours.breaks=c(0,0.5,1)
+
+
+g<-ggplot(summary.per.journal.year[pubyear!="2013"],aes(x=pubyear,y=journal,fill=(sloppy+late)/N))+geom_tile()+geom_text(aes(label=paste(sloppy+late,N,sep="/")))+scale_fill_gradientn(colours=colours,values=colours.breaks)+scale_size_continuous(range=c(2,4))+xlab("Year of publication")+ylab("Journal")
+
+ggsave("sloppy.and.late.pdb.per.year.and.journal.sorted.by.IF.heatmap.pdf",w=20,h=16,plot=g)
+print(g)
+```
+
+
+## Summary per journal corresponding to the heatmap data 
+```{r}
+summary.per.journal<-pdb.medline[journal %in% top.journals,list(N=.N,"With.History"=sum((!is.na(received) | !is.na(accepted)) ),"sloppy"=sum(time=="Sloppy"),"late"=sum(time=="Late")),by=journal]
+summary.per.journal[,sloppy.ratio.min:=ifelse(With.History>0,sloppy/N,NA)]
+summary.per.journal[,sloppy.ratio:=ifelse(With.History>0, sloppy/With.History,NA)]
+summary.per.journal[,late.ratio:=late/N]
+summary.per.journal[,IF:=impact.factor[match.journal.name(as.character(journal)),"IF"],by=journal]
+write.xlsx(summary.per.journal,file="ratio.per.journal.xlsx",row.names=F)
+```
+
+# Analysis of GEO Deposit time
+```{r}
+m <- dbDriver("SQLite")
+con <- dbConnect(m, dbname = "local-medline-pdb.db")
+sql<-"SELECT gse,submission_date, pubmed_id,pmid,journal,
+cast(earliestpublicdate as chard) as earliestpublicdate,
+cast(receiveddate as char) as received,
+cast(aheadofprintdate as char) as aheadofprint,
+cast(accepteddate as char) as accepted,
+cast(publisheddate as char) as published,
+cast(earliestpublicationdate as char) as earliestpublication
+FROM gse INNER JOIN medline ON pubmed_id=pmid 
+WHERE 
+    earliestpublicdate IS NOT NULL 
+AND earliestpublicdate >=Datetime('1995-01-01')"
+#AND (published IS NULL OR published < Datetime('2013-01-01'))
+#AND (accepted IS NULL OR accepted < Datetime('2013-01-01'))"
+#AND (accepted IS NULL OR received IS NULL OR received<=accepted
+merged.gse<-dbGetQuery(con,sql)
+merged.gse<-unique(merged.gse)
+dim(merged.gse)
+length(unique(merged.gse$gse))
+length(unique(merged.gse$pmid))
+```
+
+Cast the dates as appropriate
+```{r}
+merged.gse$earliestpublicdate <- as.Date(merged.gse$earliestpublicdate)
+merged.gse$earliestpublication <- as.Date(merged.gse$earliestpublication)
+merged.gse$submission_date <- as.Date(merged.gse$submission_date)
+merged.gse$published <- as.Date(merged.gse$published)
+merged.gse$received <- as.Date(merged.gse$received)
+merged.gse$aheadofprint <- as.Date(merged.gse$aheadofprint)
+merged.gse$accepted <- as.Date(merged.gse$accepted)
+
+# Using lubridate helpers
+merged.gse$pubyear <- as.factor(year(merged.gse$earliestpublication))
+merged.gse$depoyear <- as.factor(year(merged.gse$submission_date))
+
+gse.medline <- data.table(merged.gse)
+gse.medline[,has.history:=!is.na(received) | !is.na(accepted),by=gse]
+```
+Classification
+```{r}
+gse.medline[,time:="On time"]
+gse.medline[ as.integer(submission_date - earliestpublication)>=2,time:="Late"]
+gse.medline[as.integer(submission_date - earliestpublicdate)>=2 & time=="On time",time:="Sloppy"]
+
+# Checks 
+gse.medline[time=="On time" & (submission_date - earliestpublicdate>1)]
+gse.medline[time=="Sloppy" & (is.na(accepted) & is.na(received))]
+```
+Distribution per year
+```{r}
+
+colors<-gg_color_hue(3,chroma=90,luminance=60)[c(2,3,1)] # Tassos selection
+# colors<-gg_color_hue(12,chroma=90,luminance=50)[c(5,2,1)] # Green orange red 
+only.with.history <- T
+
+if (only.with.history){
+  gse.medline.pop <- gse.medline[ earliestpublicdate >= "1995-01-01" & earliestpublication <= "2012-12-31" & (!is.na(received) | !is.na(accepted))]
+}else{
+  gse.medline.pop <- gse.medline[ earliestpublicdate >= "1995-01-01" & earliestpublication <= "2012-12-31"]
+
+}
+
+gse.medline.pop[,.N,by=pubyear][order(pubyear)]
+gse.medline.pop$time <- factor(gse.medline.pop$time,levels=c("On time","Sloppy","Late"))
+totPubs<-max(gse.medline.pop[,.N,by=pubyear][,N])*1.05
+
+g<-ggplot()+geom_bar(data=gse.medline.pop,aes(x=pubyear,fill=time),position="fill")
+
+g<-g+geom_line(data=gse.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N/totPubs,group=1),size=1,colour="grey40")+geom_point(data=gse.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N/totPubs),size=2,colour="grey20")
+g<-g+scale_y_continuous(labels = percent_format())+xlab("Year of publication")+ylab("Proportion")
+g<-g+geom_text(data=gse.medline.pop[,.N,by=pubyear],aes(x=pubyear,y=N/totPubs,label=N),size=4.2,vjust=-1)
+g+scale_fill_manual(values=colors)
+#+ggtitle(paste(colors,collapse="-"))
+
+
+if(only.with.history){
+  ggsave("GEO.proportion.late.sloppy.per.year.pdb.only.history.pdf",w=12,h=8)
+}else{
+  ggsave("GEO.proportion.late.sloppy.per.year.pdb.pdf",w=12,h=8)
+}
+
+
+
+```
+
+# Summary table 
+```{r}
+gse.summary.per.journal<-gse.medline[,list(N=.N,"With.History"=sum((!is.na(received) | !is.na(accepted)) ),"sloppy"=sum(time=="Sloppy"),"late"=sum(time=="Late")),by=journal]
+gse.summary.per.journal[,sloppy.ratio.min:=ifelse(With.History>0,sloppy/N,NA)]
+gse.summary.per.journal[,sloppy.ratio:=ifelse(With.History>0, sloppy/With.History,NA)]
+gse.summary.per.journal[,late.ratio:=late/N]
+
+gse.summary.per.journal[,IF:=impact.factor[match.journal.name(as.character(journal)),"IF"],by=journal]
+summary.per.journal
+
+
+gse.summary.per.journal<-head(gse.summary.per.journal[order(N,decreasing=T)],n=50)
+
+write.xlsx(gse.summary.per.journal,row.names=F,file="GEO.ratio.per.journal.xlsx")
+
+````
+
+
+
+# Heatmap
+```{r}
+top.journals <-tail(gse.summary.per.journal[order(N),journal],n=70)
+
+# Build the ordering
+journals.by.IF <- gse.summary.per.journal[order(IF)][!is.na(IF)][,journal]
+
+summary.per.journal.year<-gse.medline[journal %in% top.journals & earliestpublication>="2002-01-01",list(N=.N,"With.History"=sum((!is.na(received) | !is.na(accepted)) ),"sloppy"=sum(time=="Sloppy"),"late"=sum(time=="Late")),by=list(journal,pubyear)]
+summary.per.journal.year[,sloppy.ratio.min:=ifelse(With.History>0,sloppy/N,NA)]
+summary.per.journal.year[,sloppy.ratio:=ifelse(With.History>0, sloppy/With.History,NA)]
+summary.per.journal.year[,late.ratio:=late/N]
+summary.per.journal.year[,IF:=impact.factor[match.journal.name(as.character(journal)),"IF"],by=journal]
+summary.per.journal.year$journal <- factor(summary.per.journal.year$journal,levels=journals.by.IF)
+colours=c("gold","white","red")
+colours.breaks=c(0,0.5,1)
+
+ggplot(na.omit(summary.per.journal.year[pubyear!="2013"]),aes(x=pubyear,y=journal,fill=sloppy.ratio,alpha=With.History>=10))+geom_tile()+geom_text(aes(label=paste(sloppy,With.History,sep="/")))+scale_fill_gradientn(colours=colours,values=colours.breaks)+scale_size_continuous(range=c(2,4))
+
+ggsave("GSE.heatmap.sloppy.per.year.per.journal.sorted.by.IF.pdf",width=20,height=12)
+
+
+# Late 
+colours.breaks.late=c(0,0.05,0.6)
+ggplot(na.omit(summary.per.journal.year[pubyear!="2013"]),aes(x=pubyear,y=journal,alpha=N>=10,fill=late.ratio))+geom_tile()+geom_text(aes(label=paste(late,N,sep="/")))+scale_fill_gradientn(colours=colours,values=colours.breaks.late)+scale_size_continuous(range=c(2,4))
+
+```
+
+
+
+
+
+# During review, when does the structure gets deposited? 
+I would expect an uniform distrib, since the authors are not aware of when a paper will be accepted 
+```{r}
+
+colors<-gg_color_hue(3,chroma=90,luminance=60)[c(2,3,1)] # Tassos selection
+
+pdb.medline.pop <- pdb.medline[depodate >= "2000-01-01" & depodate <= "2012-12-31"]
+
+pdb.medline.full.history <- pdb.medline.pop[has.history==T & !is.na(accepted) & !is.na(received) & accepted <= "2014-01-01"]
+
+
+ggplot(pdb.medline[has.history==T & !is.na(accepted) &  time =="Sloppy"],aes(x=as.integer(depodate-accepted)))+geom_bar()
+
+ggplot(pdb.medline[has.history==T & !is.na(accepted) &  time =="Sloppy"],aes(x=as.integer(depodate-accepted)))+geom_bar(position="stack",binwidth=5)+coord_cartesian(xlim=c(-100,+50))
+
+
+ggplot(pdb.medline.pop[has.history==T & !is.na(accepted) &  time =="Sloppy"],aes(x=as.integer(depodate-accepted)))+geom_bar(position="stack",binwidth=1)+coord_cartesian(xlim=c(-100,+50))
+
+
+ggplot(pdb.medline.pop[has.history==T & !is.na(accepted) &  time =="Sloppy" & journal %in% top.journals],aes(fill=journal,x=as.integer(depodate-accepted)))+geom_bar(position="stack",binwidth=5)+coord_cartesian(xlim=c(-100,+50))
+
+
+ggplot(pdb.medline.pop[has.history==T & !is.na(accepted) &  time =="Sloppy" & journal %in% top.journals],aes(fill=journal,x=as.integer(depodate-accepted)))+geom_bar(position="stack",binwidth=2)+coord_cartesian(xlim=c(-100,+50))
+
+
+ggplot(pdb.medline.pop[has.history==T & !is.na(accepted) &  time =="Sloppy" & journal %in% top.journals],aes(x=as.integer(depodate-accepted)))+geom_bar(position="stack",binwidth=2)+coord_cartesian(xlim=c(-100,+50))
+
+ggplot(pdb.medline.pop[has.history==T & !is.na(accepted),list(time,delay=as.integer(depodate-accepted))],aes(fill=time,x=delay))+geom_bar(position="stack",binwidth=30)+coord_cartesian(xlim=c(-100,+50))
+
+
+ggplot(pdb.medline.pop[has.history==T & !is.na(accepted),list(time,delay=as.integer(depodate-accepted))],aes(fill=time,x=delay))+geom_bar(position="stack",binwidth=2)+coord_cartesian(xlim=c(-100,+50))
+
+
+# We accumulate anything before 20 days 
+pdb.medline.full.history.sloppy.trimmed <- pdb.medline.full.history[!is.na(received)]
+pdb.medline.full.history.sloppy.trimmed[,delay:=as.integer(depodate-accepted)]
+pdb.medline.full.history.sloppy.trimmed[,pub.delay:=as.integer(depodate-earliestpublication)]
+
+pdb.medline.full.history.sloppy.trimmed<-pdb.medline.full.history.sloppy.trimmed[!is.na(delay) ]
+
+
+THR_DAY=20L
+pdb.medline.full.history.sloppy.trimmed[delay<=-THR_DAY,delay:=-THR_DAY]
+pdb.medline.full.history.sloppy.trimmed[delay>=THR_DAY,delay:=THR_DAY]
+
+pdb.medline.full.history.sloppy.trimmed$time <- factor(pdb.medline.full.history.sloppy.trimmed$time,levels=c("On time","Sloppy","Late"))
+
+ggplot(pdb.medline.full.history.sloppy.trimmed[-THR_DAY<=delay & delay<=THR_DAY],aes(fill=time,x=delay))+geom_bar(position="stack",binwidth=2)+geom_vline(x=2,linetype="dashed",color="firebrick")+scale_fill_manual(values=colors)+scale_x_continuous(limits=c(-THR_DAY,THR_DAY))
+
+ggplot(pdb.medline.full.history.sloppy.trimmed[-THR_DAY<=delay & delay<=THR_DAY  & time=="Sloppy"],aes(fill=time,x=delay))+geom_bar(position="stack",binwidth=2)+geom_vline(x=2,linetype="dashed",color="firebrick")+scale_fill_manual(values=colors)
+
+
+ggplot(pdb.medline.full.history.sloppy.trimmed[-THR_DAY<=pub.delay & pub.delay<=THR_DAY],aes(fill=time,x=pub.delay))+geom_bar(position="stack",binwidth=2)+geom_vline(y=0)+scale_fill_manual(values=colors)
+
+```
+
+
+
+Generate final pub ready version figures: Distribution of delays between deposition and paper acceptance 
+```{r}
+THR_DAY=50
+colors<-gg_color_hue(3,chroma=90,luminance=60)[c(2,3,1)] # Tassos selection
+pdb.medline.pop <- pdb.medline[depodate >= "2000-01-01" & depodate <= "2012-12-31"]
+pdb.medline.full.history <- pdb.medline.pop[has.history==T & !is.na(accepted) & !is.na(received) & accepted <= "2014-01-01"]
+pdb.medline.full.history[,delay:=as.integer(depodate-accepted)]
+pdb.medline.full.history[,pub.delay:=as.integer(depodate-earliestpublication)]
+pdb.medline.full.history$time=factor(pdb.medline.full.history$time,levels=c("On time","Sloppy","Late"))
+
+g<-ggplot(pdb.medline.full.history[-THR_DAY<=pub.delay & pub.delay<=THR_DAY],aes(fill=time,x=pub.delay))+geom_bar(position="stack",binwidth=2)+geom_vline(x=2,linetype="dashed",color="firebrick")+scale_fill_manual(values=colors)
+
+g<-ggplot(pdb.medline.full.history[-THR_DAY<=delay & delay<=THR_DAY],aes(fill=time,x=delay))+geom_bar(position="stack",binwidth=2)+geom_vline(x=2,linetype="dashed",color="firebrick")+scale_fill_manual(values=colors)
+
+
+g<-g+xlab(paste("Number of days between day of structure deposition and day of paper acceptance (",nrow(pdb.medline.full.history)," data points)"))
+ggsave(file="distribution.delays.deposit.acceptance.pdf",w=12,h=8,plot=g)
+print(g)
+```
+
+
+Generate binned data in xls file
+GGplot bin the data by excluding excluding the right value and including the left value 
+
+```{r}
+bins <- c(min(pdb.medline.full.history$delay),seq(-50,50,2),max(pdb.medline.full.history$delay),1)
+bins <- c(min(pdb.medline.full.history$delay),seq(-50,50,2),max(pdb.medline.full.history$delay))
+pdb.medline.full.history$bin<-cut(pdb.medline.full.history$delay,bins,right=F,include=T)
+pdb.medline.full.history.binned<-pdb.medline.full.history[,.N,by=list(bin,time)][order(bin)]
+pdb.medline.full.history.binned$time=factor(pdb.medline.full.history.binned$time,levels=c("On time","Sloppy","Late"))
+ggplot(pdb.medline.full.history.binned[bin!="[-3.7e+03,-50)"],aes(x=bin,y=N,fill=time))+geom_bar(stat="identity")+scale_fill_manual(values=colors)
+write.xlsx(pdb.medline.full.history.binned,file="distribution.delays.deposit.acceptance.xlsx",row.names=F)
+write.xlsx(acast(pdb.medline.full.history.binned,bin~time,value.var="N"),file="distribution.delays.deposit.acceptance.xlsx",sheet="casted",append=T,showNA=F)
+```
+
+
+
+Problem is that this statistics depends on the delta between received and accepted dates. If we plot relative time, one for entry, we get 
+** NOT FINISHED YET ** 
+
+```{r}
+pdb.medline.full.history.sloppy[,total.review.time:= as.integer(accepted-received)]
+pdb.medline.full.history.sloppy[,relative.depo:= as.integer(depodate-accepted)/total.review.time]
+```
+
+
+# Four classes figure
+
+## Data preparation 
+```{r}
+pdb.medline.4 <-  pdb.medline[ earliestpublicdate >= "1995-01-01" & earliestpublication <= "2012-12-31"]
+pdb.medline.4[,time:="On time?"]
+pdb.medline.4[ as.integer(depodate - earliestpublication)>=2,time:="Late"]
+pdb.medline.4[as.integer(depodate - earliestpublicdate)>=2 & time=="On time?",time:="Sloppy"]
+pdb.medline.4[as.integer(depodate - earliestpublicdate)<=2 & has.history==T &  time=="On time?",time:="Sure on time"]
+
+pdb.medline.4$time <- factor(pdb.medline.4$time,levels=c("Late","On time?","Sloppy","Sure on time"),ordered=T)
+
+pdb.medline.4.by.year=pdb.medline.4[,.N,list(time,pubyear)]
+# Add, for each year, late and maybe 
+pdb.medline.4.by.year.under<-data.table(dcast(pdb.medline.4.by.year,pubyear~time,value.var="N"))
+setnames(pdb.medline.4.by.year.under,colnames(pdb.medline.4.by.year.under),make.names(colnames(pdb.medline.4.by.year.under)))
+
+pdb.medline.4.by.year.under[,acc.sloppy:=On.time.+Late]
+pdb.medline.4.by.year.under[,acc.sure:=On.time.+Late+Sloppy]
+
+pdb.medline.4.by.year.under[,tot:=Late+On.time.+Sloppy+Sure.on.time,by=pubyear]
+melt(pdb.medline.4.by.year.under)
+
+pdb.medline.4.by.year.under[,with.history:=Sloppy+Sure.on.time,by=pubyear]
+
+
+pdb.medline.4.by.year.under[,slop.label:= paste("atop(",Sloppy,",\"",sprintf("%d%%",as.integer(floor(Sloppy/with.history*100))),"\")",sep="")]
+
+pdb.medline.4.by.year.under[,on.time.label:= paste("atop(",Sure.on.time,",\"",sprintf("%d%%",as.integer(ceiling(Sure.on.time/with.history*100))),"\")",sep="")]
+
+pdb.medline.4.by.year.under[,late.label:=Late]
+
+```
+
+Facetted plot
+```{r}
+colors<-gg_color_hue(3,chroma=90,luminance=60)[c(2,3,1)] # Tassos selection
+g1<-ggplot(pdb.medline.4,aes(x=pubyear,fill=time))+geom_bar(position="fill")
+g2<-  ggplot(pdb.medline.4,aes(x=pubyear,fill=time))+geom_bar(position="stack")+scale_fill_manual(values=c(colors[3],"grey60",colors))
+grid.arrange(g1,g2)
+
+```
+Combined plot
+```{r}
+
+geom_size=15
+text_size=3.5
+colors.4 <- colors
+g<-ggplot()+geom_bar(data=pdb.medline.4,aes(x=pubyear,fill=time),position="stack")+scale_fill_manual(values=c(colors[3],rgb(200,200,200,alpha=200,maxColorValue=255),colors[2],colors[1]))
+#Chnage data frame
+#g<-g %+% na.omit(pdb.medline.4.by.year.under)
+g<-g %+% pdb.medline.4.by.year.under
+#g<-g+geom_line(aes(x=pubyear,y=acc.sloppy*(1+Sloppy/tot),label=Sloppy,group=1))
+# Add Sure on time labeling 
+g<-g+geom_point(aes(x=pubyear,y=acc.sure*(1+Sure.on.time/tot)),shape=22,size=geom_size,fill="#33DD7A")
+g<-g+geom_text(aes(x=pubyear,y=acc.sure*(1+Sure.on.time/tot),label=on.time.label),size=text_size,parse=T)
+
+#add sloppy labels
+g<-g+geom_point(aes(x=pubyear,y=acc.sloppy*(1+Sloppy/tot)),shape=22,size=geom_size,fill="#6CB1FF")
+g<-g+geom_text(aes(x=pubyear,y=acc.sloppy*(1+Sloppy/tot), label=slop.label),size=text_size,parse=T)
+
+#add late labels
+g<-g+geom_point(aes(x=pubyear,y=100),shape=22,size=geom_size*0.7,fill="#F37E76")
+g<-g+geom_text(aes(x=pubyear,y=100, label=late.label),size=text_size,parse=T)
+g<-g+xlab("Year of publication")
+#ggsave(file="proportion.late.sloppy.per.year.pdb.four.classes.pdf",w=12,h=8,plot=g)
+print(g)
+```
+
+
+
