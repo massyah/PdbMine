@@ -43,7 +43,7 @@ Once entries have been processed, parsed and inserted in the database, we comput
 
 
 
-Results from these steps are stored in the provided [SQLite database:local-medline-pdb.db](local-medline-pdb.db)
+Results from these steps are stored in the provided [SQLite database:local-medline-pdb.db](local-medline-pdb.db). For convenience, the joined databaes are available as an R data.frame (actually [data.tables](http://cran.r-project.org/web/packages/data.table/index.html)) in [data/pdb.medline.RData](data/pdb.medline.RData)
 # Analysis
 All data aggregations and figure generation are performed in R and are described in [deposit_time_analysis.Rmd](deposit_time_analysis.Rmd)
 
