@@ -29,8 +29,8 @@ Clean the pdb-entries folder by removing any empty file:
 # Inserting the entries in a local SQLite3 databases
 Once the entries have been downloaded, we run [medline-get.py](medline-get.py) then :
 
-   pdb_store_entries_not_in_db()
-   get_medlines_for_pdbs() # Takes a while, download all entries from MEDLINE corresponding to PDB entries 
+    pdb_store_entries_not_in_db()
+    get_medlines_for_pdbs() # Takes a while, as this will download all entries from MEDLINE corresponding to PDB entries 
 
 
 
