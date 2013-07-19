@@ -1,10 +1,9 @@
 PdbMine: Mining the PDB database jointly with MEDLINE
 ========================================================
 
-Accompanying code and databases for Article _Timely deposition of macromolecular structures is necessary for peer review_, by Robbie P. Joosten, Hayssam Soueidan, Lodewyk Wessels and Anastassis Perrakis. 
+Accompanying code and databases for article _Timely deposition of macromolecular structures is necessary for peer review_, by Robbie P. Joosten, Hayssam Soueidan, Lodewyk Wessels and Anastassis Perrakis. 
 
-This study starts with a list of PDB entries that you want to analyze. For the article, we took all PDB entries listed on [the PDB website](http://www.rcsb.org/pdb/home/home.do) as of the 01st June 2013. Based on these entries, the corresponding MEDLINE entries are downloaded parsed and both the PDB and the MEDLINE entries are stored in a local SQLite3 database. 
-
+This study starts with a list of PDB entries to analyze. For our article, we took all PDB entries listed on [the PDB website](http://www.rcsb.org/pdb/home/home.do) on the 01st of June 2013 (91639). Based on these entries, the corresponding MEDLINE entries are downloaded parsed and both the PDB and the MEDLINE entries are stored in a local SQLite3 database. 
 
 
 # Getting the list of PDB entries 
@@ -15,13 +14,10 @@ Select "Citation" as a query type, then check filter to only keep "Primary citat
 
 # Getting the PDB entries
 
-We get them from the PDB ftp site. 
+PDB entries were obtained from PDB ftp site. For convenience, we provide a multi-thead FTP downloader. To use it, edit [pdb-get-multi-thread.py](pdb-get-multi-thread.py), pointing to the correct list of PDB entries (first lines, CITATIONFILE variable)
+We also recommend to adjust the number of threads available depending on the machine used. 
 
-Run [pdb-get-multi-thread.py](pdb-get-multi-thread.py), pointing to the correct list of PDB entries (first lines, CITATIONFILE variable)
-
-Adjust the number of threads available depending on the machine used. 
-
-Clean the pdb-entries folder by removing any empty file:
+Once entries are downloaded, we clean the pdb-entries folder by removing any empty file:
 
     find . -type f -empty | xargs rm
 
@@ -29,8 +25,9 @@ Clean the pdb-entries folder by removing any empty file:
 # Inserting the entries in a local SQLite3 databases
 Once the entries have been downloaded, we run [medline-get.py](medline-get.py) then :
 
+    # Takes a while, as this will download all entries from MEDLINE corresponding to PDB entries 
     pdb_store_entries_not_in_db()
-    get_medlines_for_pdbs() # Takes a while, as this will download all entries from MEDLINE corresponding to PDB entries 
+    get_medlines_for_pdbs() 
 
 
 
