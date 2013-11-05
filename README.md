@@ -3,7 +3,7 @@ PdbMine: Mining the PDB database jointly with MEDLINE
 
 Accompanying code and databases for Article _Timely deposition of macromolecular structures is necessary for peer review_, by Robbie P. Joosten, Hayssam Soueidan, Lodewyk Wessels and Anastassis Perrakis. 
 
-This study starts with a list of PDB entries that you want to analyze. For the article, we took all PDB entries listed on [the PDB website](http://www.rcsb.org/pdb/home/home.do) as of the 01st June 2013. Based on these entries, the corresponding MEDLINE entries are downloaded parsed and both the PDB and the MEDLINE entries are stored in a local SQLite3 database. 
+This study starts with a list of PDB entries that you want to analyze. For the article, we took all PDB entries listed on [the PDB website](http://www.rcsb.org/pdb/home/home.do) as of the 28 june 2013 at 15:25 Amsterdam time. Based on these entries, the corresponding MEDLINE entries are downloaded parsed and both the PDB and the MEDLINE entries are stored in a local SQLite3 database. 
 
 
 
@@ -43,11 +43,12 @@ Once entries have been processed, parsed and inserted in the database, we comput
 
 
 
-Results from these steps are stored in the provided [SQLite database:local-medline-pdb.db](local-medline-pdb.db). For convenience, the joined databaes are available as an R data.frame (actually [data.tables](http://cran.r-project.org/web/packages/data.table/index.html)) in [data/pdb.medline.RData](data/pdb.medline.RData)
+Results from these steps are stored in the provided [SQLite database:local-medline-pdb.db](local-medline-pdb.db). For convenience, the joined databaes are available as an R data.frame (actually as a [data.table](http://cran.r-project.org/web/packages/data.table/index.html)) in [data/pdb.medline.RData](data/pdb.medline.RData).
+
 # Analysis
 All data aggregations and figure generation are performed in R and are described in [deposit_time_analysis.Rmd](deposit_time_analysis.Rmd)
 
 
 # Impact factor table 
 
-For copyright reasons, this table cannot be made available. The impact factor table that we used correponds to the 2013 Thomson Reuters estimate. 
+For copyright reasons, this table cannot be made available. The impact factor table that we used correponds to the 2013 Thomson Reuters estimate.

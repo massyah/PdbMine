@@ -62,7 +62,7 @@ merged<-unique(merged)
 dim(merged)
 length(unique(merged$pdbid))
 length(unique(merged$pmid))
-save(merged,file="data/pdb.medline.RData")
+#save(merged,file="data/pdb.medline.RData")
 ```
 
 We can then load it 
@@ -89,7 +89,7 @@ merged$journal <- as.factor(merged$journal)
 merged$pmid <- as.factor(merged$pmid)
 pdb.medline <- data.table(merged)
 pdb.medline[,has.history:=!is.na(received) | !is.na(accepted),by=pdbid]
-save(merged,pdb.medline,file="data/pdb.medline.RData")
+#save(merged,pdb.medline,file="data/pdb.medline.RData")
 ```
 
 We filter out outliers, coming from NSMB that are accepted before review 
