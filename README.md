@@ -51,4 +51,4 @@ All data aggregations and figure generation are performed in R and are described
 
 # Impact factor table 
 
-For copyright reasons, this table cannot be made available. The impact factor table that we used correponds to the 2013 Thomson Reuters estimate.
+For copyright reasons, this table cannot be made available. The impact factor table that we used correponds to the 2011 Thomson Reuters estimate.
