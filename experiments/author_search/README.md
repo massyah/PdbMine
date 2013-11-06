@@ -19,3 +19,7 @@ run [author_search.py], output will be appended to author_search.csv
 Run analyze_pdb_for_pmids.R.
 This will perform the join with the pdb data and will save its output in author_search_with_pdb_data.tsv. 
 
+
+
+# author index 
+database can be updated with build_author_index.py 
